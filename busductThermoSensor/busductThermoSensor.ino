@@ -1,30 +1,21 @@
-// Busduct thermo / vibration sensor - Arduino Nano (ATmega328P, 16 MHz)
+// Busduct thermo sensor - Arduino Nano (ATmega328P, 16 MHz)
 //
 // - NTC on A0 sampled every 1 ms by Timer2 ISR, averaged over 1000 samples (1 s)
-// - ADXL345 (SPI) DATA_READY on INT0, 1600 samples per window (1 s at 1600 Hz ODR)
-//   ISR only accumulates sum / sum of squares / min / max; math runs in loop()
-// - Holding registers are refreshed in loop() when a window completes and are
+// - The temperature register is refreshed in loop() once per second and is
 //   served by modbus_update() on every master request
 // - Slave ID is writable over Modbus (last register) and kept in EEPROM
 //   as two verified copies, so it survives power loss
 
-#include <SPI.h>
 #include <EEPROM.h>
 #include <avr/wdt.h>
 #include "SimpleModbusSlave.h"
-#include "SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
 
 #define RTD_PIN            A0
 #define TX_ENABLE_PIN      3
-#define ADXL_CS_PIN        4
-#define ADXL_INT1_PIN      2   // INT0, ADXL345 INT1 output
 #define BAUD               9600
 #define DEFAULT_SLAVE_ID   71
 
-#define ADXL345_INT_DATA_READY_BIT 7
-
 #define TEMP_SAMPLES       1000  // 1 ms each -> 1 s average
-#define VIB_SAMPLES        1600  // at 1600 Hz ODR -> 1 s window
 
 #define ENABLE_TRIPLE_RESET 0    // 1: three power cycles within 5 s restore DEFAULT_SLAVE_ID
 #define RESET_WINDOW_MS     5000
@@ -36,30 +27,18 @@ const float NTC_R0   = 100000.0f; // [ohm] at T0
 const float NTC_T0   = 298.15f;   // [K]
 const float NTC_BETA = 3950.0f;   // [K]
 
-// ADXL345 full resolution: 3.9 mg/LSB -> register unit is 0.01 g
-const float LSB_TO_CG          = 0.39f;
-const float G_TO_MS2           = 9.80665f;
-const float RMS_ZERO_THRESHOLD = 0.1f; // [LSB]
-
-// Register map (do not reorder: SlaveIDReg must stay last, it is the only writable one)
+// Register map: addresses kept from the earlier vibration + temperature firmware,
+// so masters need no reconfiguration. Addresses 0-2 and 4-19 are unused and read 0.
+// SlaveIDReg must stay last: the library only allows writes to the last register.
 enum
 {
-  XaxisRMS, YaxisRMS, ZaxisRMS,                         // 0.01 g
-  TempValue,                                            // 0.01 degC
-  XaxismodPosP, YaxismodPosP, ZaxismodPosP,             // 0.01 g
-  XaxisRMS_m_s, YaxisRMS_m_s, ZaxisRMS_m_s,             // 0.01 m/s2
-  XaxismodPosP_m_s, YaxismodPosP_m_s, ZaxismodPosP_m_s, // 0.01 m/s2
-  XaxismodNegP, YaxismodNegP, ZaxismodNegP,             // 0.01 g
-  XaxismodNegP_m_s, YaxismodNegP_m_s, ZaxismodNegP_m_s, // 0.01 m/s2
-  looptime,       // last ADXL ISR duration [us]
-  Modbuslooptime, // longest loop() pass in the last window [us], must stay < ~3000
-  SlaveIDReg,
+  TempValue      = 3,  // 0.01 degC (signed)
+  Modbuslooptime = 20, // longest loop() pass in the last second [us], must stay < ~3000
+  SlaveIDReg     = 21, // 1-247, read/write
   HOLDING_REGS_SIZE
 };
 
 unsigned int holdingRegs[HOLDING_REGS_SIZE];
-
-ADXL345 adxl = ADXL345(ADXL_CS_PIN);
 
 float rInf; // NTC R at infinite temperature, from beta model
 
@@ -98,86 +77,6 @@ ISR(TIMER2_COMPA_vect)
 }
 
 // ---------------------------------------------------------------------------
-// Vibration sampling (ADXL345 DATA_READY on INT0)
-// ---------------------------------------------------------------------------
-struct AxisAcc
-{
-  int32_t  sum;
-  uint64_t sumSq;
-  int16_t  minV;
-  int16_t  maxV;
-};
-
-// accIsr is touched only by the ISR. accReady is written by the ISR and read by
-// loop() with interrupts disabled (cli() is a compiler memory barrier on AVR).
-static AxisAcc accIsr[3];
-static AxisAcc accReady[3];
-static uint16_t vibCount = 0;
-volatile bool vibReady = false;
-volatile uint8_t adxlSampleTick = 0;
-volatile unsigned int adxlIsrMicros = 0;
-
-static void resetAcc(AxisAcc *acc)
-{
-  for (uint8_t a = 0; a < 3; a++)
-  {
-    acc[a].sum = 0;
-    acc[a].sumSq = 0;
-    acc[a].minV = 32767;
-    acc[a].maxV = -32768;
-  }
-}
-
-void adxlISR()
-{
-  unsigned long t0 = micros();
-  int v[3];
-
-  // Reading the data registers also clears DATA_READY
-  adxl.readAccel(&v[0], &v[1], &v[2]);
-
-  for (uint8_t a = 0; a < 3; a++)
-  {
-    int16_t s = v[a];
-    accIsr[a].sum += s;
-    accIsr[a].sumSq += (uint32_t)((int32_t)s * s);
-    if (s < accIsr[a].minV) accIsr[a].minV = s;
-    if (s > accIsr[a].maxV) accIsr[a].maxV = s;
-  }
-  adxlSampleTick++;
-
-  if (++vibCount >= VIB_SAMPLES)
-  {
-    memcpy(accReady, accIsr, sizeof(accIsr));
-    resetAcc(accIsr);
-    vibCount = 0;
-    vibReady = true;
-  }
-  adxlIsrMicros = micros() - t0;
-}
-
-// INT1 is edge triggered: if one edge is missed DATA_READY stays high and no new
-// edge ever comes. Reading the data once clears it and restarts the interrupts.
-void recoverAdxlIfStalled()
-{
-  static uint8_t lastTick = 0;
-  static unsigned long lastCheck = 0;
-
-  if (millis() - lastCheck < 100)
-    return;
-  lastCheck = millis();
-
-  if (adxlSampleTick == lastTick)
-  {
-    int d[3];
-    noInterrupts();
-    adxl.readAccel(&d[0], &d[1], &d[2]);
-    interrupts();
-  }
-  lastTick = adxlSampleTick;
-}
-
-// ---------------------------------------------------------------------------
 // Register update
 // ---------------------------------------------------------------------------
 static unsigned int toReg(float v)
@@ -188,7 +87,7 @@ static unsigned int toReg(float v)
   return (unsigned int)(int16_t)r; // signed value, master reads as INT16
 }
 
-void processTemperature()
+void processTemperature(unsigned long maxPassMicros)
 {
   noInterrupts();
   uint32_t sum = adcSumReady;
@@ -201,41 +100,6 @@ void processTemperature()
   float tC = NTC_BETA / log(rNtc / rInf) - 273.15f;
 
   holdingRegs[TempValue] = toReg(tC * 100.0f);
-}
-
-void processVibration(unsigned long maxPassMicros)
-{
-  AxisAcc acc[3];
-  noInterrupts();
-  memcpy(acc, accReady, sizeof(acc));
-  vibReady = false;
-  unsigned int isrMicros = adxlIsrMicros;
-  interrupts();
-
-  const float n = VIB_SAMPLES;
-  for (uint8_t a = 0; a < 3; a++)
-  {
-    float mean = acc[a].sum / n;
-
-    // N^2 * variance computed exactly in 64-bit integers
-    int64_t varN2 = (int64_t)acc[a].sumSq * VIB_SAMPLES - (int64_t)acc[a].sum * acc[a].sum;
-    float rms = (varN2 > 0) ? sqrt((float)varN2) / n : 0.0f;
-    if (rms <= RMS_ZERO_THRESHOLD)
-      rms = 0.0f;
-
-    float rmsCg = rms * LSB_TO_CG;
-    float posCg = (acc[a].maxV - mean) * LSB_TO_CG;
-    float negCg = (acc[a].minV - mean) * LSB_TO_CG;
-
-    holdingRegs[XaxisRMS + a]         = toReg(rmsCg);
-    holdingRegs[XaxismodPosP + a]     = toReg(posCg);
-    holdingRegs[XaxismodNegP + a]     = toReg(negCg);
-    holdingRegs[XaxisRMS_m_s + a]     = toReg(rmsCg * G_TO_MS2);
-    holdingRegs[XaxismodPosP_m_s + a] = toReg(posCg * G_TO_MS2);
-    holdingRegs[XaxismodNegP_m_s + a] = toReg(negCg * G_TO_MS2);
-  }
-
-  holdingRegs[looptime] = isrMicros;
   holdingRegs[Modbuslooptime] = maxPassMicros > 65535UL ? 65535U : (unsigned int)maxPassMicros;
 }
 
@@ -397,27 +261,6 @@ void setup()
 
   rInf = NTC_R0 * exp(-NTC_BETA / NTC_T0);
 
-  SPI.begin();
-  SPI.setDataMode(SPI_MODE3);
-
-  adxl.powerOn();
-  adxl.setRangeSetting(16);
-  adxl.setSpiBit(0);
-  adxl.set_bw(ADXL345_BW_800); // 1600 Hz output data rate
-  adxl.setFullResBit(1);
-  adxl.setInterrupt(ADXL345_INT_DATA_READY_BIT, true);
-  adxl.setInterruptMapping(ADXL345_INT_DATA_READY_BIT, ADXL345_INT1_PIN);
-
-  resetAcc(accIsr);
-  pinMode(ADXL_INT1_PIN, INPUT);
-  attachInterrupt(digitalPinToInterrupt(ADXL_INT1_PIN), adxlISR, RISING);
-
-  // Clear a DATA_READY that went high before the interrupt was attached
-  int d[3];
-  noInterrupts();
-  adxl.readAccel(&d[0], &d[1], &d[2]);
-  interrupts();
-
   tempSamplerInit();
 
 #if USE_WATCHDOG
@@ -440,15 +283,10 @@ void loop()
   checkModbusSlaveIdUpdate(); // right after modbus_update, before anything touches holdingRegs
 
   if (tempReady)
-    processTemperature();
-
-  if (vibReady)
   {
-    processVibration(maxPassMicros);
+    processTemperature(maxPassMicros);
     maxPassMicros = 0;
   }
-
-  recoverAdxlIfStalled();
 
 #if ENABLE_TRIPLE_RESET
   clearBootWindowIfExpired();

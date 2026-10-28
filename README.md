@@ -1,7 +1,7 @@
 # busductthermoSensor
 
 Arduino Nano (ATmega328P, 16 MHz) Modbus RTU slave for busduct monitoring:
-NTC temperature on A0 and 3-axis vibration from an ADXL345 over SPI.
+NTC temperature on A0.
 
 ## Files
 
@@ -9,7 +9,6 @@ NTC temperature on A0 and 3-axis vibration from an ADXL345 over SPI.
 busductThermoSensor/
   busductThermoSensor.ino   sketch: sampling, register update, slave ID in EEPROM
   SimpleModbusSlave.h/.cpp  Modbus RTU slave (FC3, FC6, FC16)
-  SparkFun_ADXL345-master/  your modified ADXL345 library (not in this repo, copy it here)
 ```
 
 ## How it works
@@ -17,27 +16,24 @@ busductThermoSensor/
 | Task | Where | Rate |
 |---|---|---|
 | NTC ADC sample (non-blocking, start/read conversion) | Timer2 compare ISR | 1 kHz, 1000-sample average -> 1 s |
-| ADXL345 read, accumulate sum / sum^2 / min / max | INT0 ISR (DATA_READY) | 1600 Hz, 1600-sample window -> 1 s |
-| RMS, peaks, temperature math -> holding registers | `loop()` | once per window |
+| Temperature math -> holding register | `loop()` | once per second |
 | Modbus request handling | `loop()` -> `modbus_update()` | every pass, must stay < ~3 ms |
 
-The ISRs do no division, no float and no `analogRead()`, so `loop()` and the
-UART receive interrupt are never starved. Values shared with ISRs are copied
-with interrupts disabled. The master always reads precomputed registers.
+The ISR does no division, no float and no `analogRead()`, so `loop()` and the
+UART receive interrupt are never starved. The ADC sum is copied with interrupts
+disabled. The master always reads precomputed registers.
 
 ## Register map (holding registers, FC3)
 
+Addresses are kept from the earlier vibration + temperature firmware, so
+existing master configurations keep working.
+
 | Addr | Name | Unit |
 |---|---|---|
-| 0-2 | X/Y/Z RMS | 0.01 g |
+| 0-2 | unused (former vibration), reads 0 | |
 | 3 | Temperature | 0.01 degC (signed) |
-| 4-6 | X/Y/Z positive peak | 0.01 g |
-| 7-9 | X/Y/Z RMS | 0.01 m/s2 |
-| 10-12 | X/Y/Z positive peak | 0.01 m/s2 |
-| 13-15 | X/Y/Z negative peak | 0.01 g (signed) |
-| 16-18 | X/Y/Z negative peak | 0.01 m/s2 (signed) |
-| 19 | Last ADXL ISR duration | us |
-| 20 | Longest `loop()` pass in last window | us |
+| 4-19 | unused (former vibration), reads 0 | |
+| 20 | Longest `loop()` pass in the last second | us |
 | 21 | Slave ID (read/write, FC6 or FC16) | 1-247 |
 
 Only register 21 is writable. Broadcast writes are ignored.
@@ -65,3 +61,4 @@ Devices running the old firmware keep their ID when updated (legacy layout is mi
 - RS485: pin 3 to both DE and /RE, 120 ohm termination at both bus ends, bias resistors.
 - For EEPROM safety at 16 MHz set the brown-out detector to 4.3 V (extended fuse `0xFC`, needs ISP).
 - Do not use `tone()` or PWM on pins 3/11: Timer2 is used for NTC sampling.
+- Do not call `analogRead()` anywhere: the Timer2 ISR owns the ADC.
