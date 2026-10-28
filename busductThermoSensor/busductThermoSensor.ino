@@ -12,6 +12,8 @@
 //   counters, uptime, boot count and sampling ISR execution time
 // - Timer1 runs free at 16 MHz as a cycle counter for the ISR timing
 //   (so PWM on pins 9 and 10 is not available)
+// - Heartbeat on D13 (onboard "L" LED): 1 Hz blink = running, 4 Hz blink =
+//   NTC fault, steady on/off = sampler stopped or firmware not running
 
 #include <EEPROM.h>
 #include <avr/wdt.h>
@@ -19,6 +21,7 @@
 
 #define RTD_PIN            A0
 #define TX_ENABLE_PIN      3
+#define LED_PIN            13    // onboard "L" LED
 #define BAUD               9600
 #define DEFAULT_SLAVE_ID   71
 
@@ -31,6 +34,11 @@
 
 #define TEMP_FAULT_OPEN    ((unsigned int)0x8000) // -32768 in register 3
 #define TEMP_FAULT_SHORT   ((unsigned int)0x7FFF) //  32767 in register 3
+
+// Heartbeat LED: blinks only while 1 s sampling windows keep arriving
+#define LED_NORMAL_HALF_MS 500   // 1 Hz blink: OK
+#define LED_FAULT_HALF_MS  125   // 4 Hz blink: NTC open or short
+#define SAMPLER_STALE_MS   1500  // no window for this long -> LED off
 
 #define USE_WATCHDOG        0    // 1 only with Optiboot (old Nano bootloader hangs after WDT reset)
 
@@ -100,6 +108,7 @@ unsigned int holdingRegs[HOLDING_REGS_SIZE];
 
 float rInf; // NTC R at infinite temperature, from beta model
 unsigned long uptimeSeconds = 0; // counted from the 1 s sampling windows
+unsigned long lastWindowMillis = 0; // millis() of the last completed window
 
 // ---------------------------------------------------------------------------
 // NTC sampling (Timer2, 1 kHz)
@@ -192,6 +201,7 @@ void processTemperature(unsigned long maxPassMicros)
   if (isrTime > holdingRegs[IsrTimeMaxEver])
     holdingRegs[IsrTimeMaxEver] = isrTime;
 
+  lastWindowMillis = millis();
   uptimeSeconds++;
   holdingRegs[UptimeHi] = uptimeSeconds >> 16;
   holdingRegs[UptimeLo] = uptimeSeconds & 0xFFFF;
@@ -218,6 +228,31 @@ void processTemperature(unsigned long maxPassMicros)
   }
 
   holdingRegs[Modbuslooptime] = maxPassMicros > 65535UL ? 65535U : (unsigned int)maxPassMicros;
+}
+
+// Called every loop() pass. A hung loop freezes the LED, a stopped sampler
+// turns it off, so only a blinking LED means the sensor is working.
+void updateHeartbeat()
+{
+  static unsigned long lastToggleMillis = 0;
+  static bool ledOn = false;
+  unsigned long now = millis();
+
+  if (now - lastWindowMillis > SAMPLER_STALE_MS)
+  {
+    ledOn = false;
+    digitalWrite(LED_PIN, LOW);
+    return;
+  }
+
+  unsigned int halfPeriod = (holdingRegs[DiagStatus] & (DIAG_NTC_OPEN | DIAG_NTC_SHORT))
+                            ? LED_FAULT_HALF_MS : LED_NORMAL_HALF_MS;
+  if (now - lastToggleMillis >= halfPeriod)
+  {
+    lastToggleMillis = now;
+    ledOn = !ledOn;
+    digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +386,9 @@ void setup()
   wdt_disable();
 #endif
 
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
   analogReference(EXTERNAL); // 5 V on AREF pin - never switch to DEFAULT/INTERNAL
   analogRead(RTD_PIN);       // sets ADMUX (reference + channel) for the Timer2 sampler
 
@@ -391,6 +429,8 @@ void loop()
     processTemperature(maxPassMicros);
     maxPassMicros = 0;
   }
+
+  updateHeartbeat();
 
 #if USE_WATCHDOG
   wdt_reset();

@@ -2,8 +2,9 @@
 // diagnostics registers and EEPROM slave ID handling with simulated ADC / Timer1.
 #include "Arduino.h"
 FakeTcnt TCNT1; volatile uint8_t TCCR1A,TCCR1B; volatile uint8_t TCCR2A,TCCR2B,OCR2A,TIMSK2,ADCSRA; volatile uint16_t ADC;
-unsigned long micros(){return 0;} unsigned long millis(){return 0;} void delayMicroseconds(unsigned int){}
-void pinMode(uint8_t,uint8_t){} void digitalWrite(uint8_t,uint8_t){} int analogRead(uint8_t){return 0;}
+unsigned long micros(){return 0;} unsigned long fakeMillis = 0; unsigned long millis(){return fakeMillis;} void delayMicroseconds(unsigned int){}
+void pinMode(uint8_t,uint8_t){} int ledState = 0, ledToggles = 0;
+void digitalWrite(uint8_t pin,uint8_t v){ if(pin==13){ if(v!=ledState) ledToggles++; ledState=v; } } int analogRead(uint8_t){return 0;}
 void analogReference(uint8_t){} void noInterrupts(){} void interrupts(){} void attachInterrupt(uint8_t,void(*)(),int){}
 void HardwareSerial::begin(unsigned long,uint8_t){} int HardwareSerial::available(){return 0;} int HardwareSerial::read(){return -1;}
 size_t HardwareSerial::write(const uint8_t*,size_t n){return n;} void HardwareSerial::flush(){}
@@ -51,5 +52,25 @@ int main(){
   TCNT1.step=40; window([](int){return 511;}); window([](int){return 511;});
   check("ISR time last second = 2.5 us", holdingRegs[IsrTimeMax], 25,25);
   check("ISR max since power-up stays 10.0 us", holdingRegs[IsrTimeMaxEver], 100,100);
+  // Heartbeat LED: run loop-side updates every 5 ms for a span, windows every 1000 ms
+  auto runFor = [](unsigned long ms, bool windows, uint16_t adc) {
+    for (unsigned long t = 0; t < ms; t += 5) {
+      fakeMillis += 5;
+      if (windows && fakeMillis % 1000 == 0) { window([adc](int){return adc;}); }
+      updateHeartbeat();
+    }
+  };
+  runFor(1000, true, 511); ledToggles = 0;
+  runFor(4000, true, 511);
+  check("LED 1 Hz when OK (8 toggles in 4 s)", ledToggles, 7,9);
+  runFor(1000, true, 1023); ledToggles = 0;
+  runFor(4000, true, 1023);
+  check("LED 4 Hz on NTC fault (32 toggles in 4 s)", ledToggles, 30,34);
+  runFor(2000, false, 511); ledToggles = 0;
+  runFor(3000, false, 511);
+  check("LED steady when sampler stops (no toggles)", ledToggles, 0,0);
+  check("LED off when sampler stops", ledState, 0,0);
+  runFor(3000, true, 511);
+  check("LED blinks again after sampler resumes", ledToggles, 4,7);
   printf("%d failures\n",fails); return fails;
 }

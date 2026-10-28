@@ -95,6 +95,20 @@ the fault value instead of a temperature, so loose/intermittent contacts are
 caught too. The valid range -63 ... 259 degC is far outside busduct conditions.
 The fault clears on the first clean 1 s window.
 
+## Heartbeat LED (D13, onboard "L")
+
+| LED | Meaning |
+|---|---|
+| Slow blink, 1 Hz (0.5 s on / 0.5 s off) | Normal: loop running, new temperature every second |
+| Fast blink, 4 Hz | Running, but NTC open or shorted (register 3 shows the fault value) |
+| Steady off or steady on | Sampling stopped, firmware hung, or controller in reset |
+| A few quick flashes, then normal | Controller restarted (bootloader flashes D13 on reset) |
+
+The LED is driven from `loop()` and blinks only while the 1 s sampling windows
+keep arriving, so a hung loop freezes it and a stopped sampler turns it off.
+The old firmware's "SPI clock" LED on the same pin no longer exists: this
+firmware does not use SPI.
+
 ## Changing the slave ID
 
 1. Write the new ID to register 21, addressed to the old ID (ack comes from the old ID).
@@ -119,3 +133,4 @@ Devices running the old firmware keep their ID when updated (legacy layout is mi
 - Do not use `tone()` or PWM on pins 3/11: Timer2 is used for NTC sampling.
 - Do not use PWM on pins 9/10 or the Servo library: Timer1 is the ISR timing counter.
 - Do not call `analogRead()` anywhere: the Timer2 ISR owns the ADC.
+- D13 is the heartbeat LED output; keep it free.

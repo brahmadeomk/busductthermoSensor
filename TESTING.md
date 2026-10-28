@@ -30,7 +30,7 @@ the sketch folder, so the Arduino IDE never compiles it.
 | `tests/host/test_modbus.cpp` | Modbus library with simulated UART and `micros()` |
 | `tests/host/test_sensor.cpp` | Real Timer2 ISR + `processTemperature()` + EEPROM code with simulated ADC values and Timer1 |
 
-### Results (last run: all 43 pass)
+### Results (last run: all 48 pass)
 
 **Modbus library (20)**
 
@@ -57,7 +57,7 @@ the sketch folder, so the Arduino IDE never compiles it.
 | 19 | 32 registers read in one request (69-byte reply) | PASS |
 | 20 | Interface counters: bus frames, requests, CRC, frame errors, exceptions | PASS |
 
-**Sensor sketch (23)**
+**Sensor sketch (28)**
 
 | # | Case | Register value | Result |
 |---|---|---|---|
@@ -84,6 +84,11 @@ the sketch folder, so the Arduino IDE never compiles it.
 | 41 | ISR time follows longer runs -> 10.0 us | 100 | PASS |
 | 42 | ISR time follows shorter runs -> 2.5 us | 25 | PASS |
 | 43 | ISR max since power-up keeps highest | 100 | PASS |
+| 44 | Heartbeat LED 1 Hz when OK (8 toggles in 4 s) | 8 | PASS |
+| 45 | Heartbeat LED 4 Hz on NTC fault (32 toggles in 4 s) | 32 | PASS |
+| 46 | LED stops blinking when sampling windows stop | 0 toggles | PASS |
+| 47 | LED is off when sampling stops | off | PASS |
+| 48 | LED blinks again when sampling resumes | 5 toggles in 3 s | PASS |
 
 Case 30 shows that rare spikes bias the average slightly (-0.25 degC at 0.5 %
 spikes to full scale). Spike rejection can be added if the bench test shows it
@@ -162,6 +167,7 @@ Record actual values and Pass/Fail in the sheet at the end.
 | H21 | Supply variation | If a bench supply is available: 4.5 V to 5.5 V at 100 kohm. | Reg 3 changes < 0.1 degC (ratiometric) |
 | H22 | Legacy migration | Flash the old firmware, set its ID to 80, then flash this firmware. | Comes up on ID 80 (not 71) |
 | H23 | Long run | 24 h continuous polling, real NTC. | No timeouts; reg 31 unchanged (no resets); reg 26/27 not rising; reg 33 stable |
+| H24 | Heartbeat LED | Watch D13 "L" LED: normal, then NTC disconnected, then reconnected; press reset. | 1 Hz blink normally; 4 Hz while NTC open; back to 1 Hz within 2 s of reconnecting; after reset a few bootloader flashes, then 1 Hz |
 
 ### If a test fails
 
@@ -206,3 +212,4 @@ Board / serial no.: ____________  Firmware commit: ____________  Date: _________
 | H21 | | | |
 | H22 | | | |
 | H23 | | | |
+| H24 | | | |
