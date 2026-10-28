@@ -51,7 +51,6 @@ Devices running the old firmware keep their ID when updated (legacy layout is mi
 
 ## Build options (top of the sketch)
 
-- `ENABLE_TRIPLE_RESET` - three power cycles within 5 s restore ID 71.
 - `USE_WATCHDOG` - 2 s watchdog. Only with the Optiboot bootloader; the old Nano bootloader hangs after a WDT reset.
 
 ## Hardware notes

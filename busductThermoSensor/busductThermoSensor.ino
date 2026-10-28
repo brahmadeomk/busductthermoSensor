@@ -17,8 +17,6 @@
 
 #define TEMP_SAMPLES       1000  // 1 ms each -> 1 s average
 
-#define ENABLE_TRIPLE_RESET 0    // 1: three power cycles within 5 s restore DEFAULT_SLAVE_ID
-#define RESET_WINDOW_MS     5000
 #define USE_WATCHDOG        0    // 1 only with Optiboot (old Nano bootloader hangs after WDT reset)
 
 // NTC: fixed resistor to AREF (3.0 V), NTC to GND, junction on A0
@@ -107,14 +105,11 @@ void processTemperature(unsigned long maxPassMicros)
 // Slave ID in EEPROM
 // ---------------------------------------------------------------------------
 // EEPROM layout
-//  0..4 : legacy layout [magicLo, magicHi, slaveId, bootCounter, bootMarker]
-//         bytes 3,4 are still used by the triple power-cycle reset
+//  0..2 : legacy layout [magicLo, magicHi, slaveId], read only for migration
 // 16..19: slave ID copy A [magicLo, magicHi, id, ~id]
 // 24..27: slave ID copy B [magicLo, magicHi, id, ~id]
 const uint16_t CONFIG_MAGIC = 0xA5A5;
 const int LEGACY_ADDR       = 0;
-const int BOOT_COUNTER_ADDR = 3;
-const int BOOT_MARKER_ADDR  = 4;
 const int ID_COPY_A         = 16;
 const int ID_COPY_B         = 24;
 
@@ -201,45 +196,6 @@ void checkModbusSlaveIdUpdate()
   holdingRegs[SlaveIDReg] = currentSlaveId; // master reads back the ID actually in use
 }
 
-#if ENABLE_TRIPLE_RESET
-unsigned long bootStartMillis = 0;
-bool windowCleared = false;
-
-void handleTripleResetOnBoot()
-{
-  uint8_t counter = EEPROM.read(BOOT_COUNTER_ADDR);
-  if (EEPROM.read(BOOT_MARKER_ADDR) == 1)
-    counter++;
-  else
-    counter = 1;
-
-  if (counter >= 3)
-  {
-    saveSlaveId(DEFAULT_SLAVE_ID);
-    currentSlaveId = DEFAULT_SLAVE_ID;
-    EEPROM.update(BOOT_COUNTER_ADDR, 0);
-    EEPROM.update(BOOT_MARKER_ADDR, 0);
-  }
-  else
-  {
-    EEPROM.update(BOOT_COUNTER_ADDR, counter);
-    EEPROM.update(BOOT_MARKER_ADDR, 1);
-  }
-  bootStartMillis = millis();
-  windowCleared = false;
-}
-
-void clearBootWindowIfExpired()
-{
-  if (!windowCleared && (millis() - bootStartMillis) >= RESET_WINDOW_MS)
-  {
-    EEPROM.update(BOOT_COUNTER_ADDR, 0);
-    EEPROM.update(BOOT_MARKER_ADDR, 0);
-    windowCleared = true;
-  }
-}
-#endif
-
 // ---------------------------------------------------------------------------
 void setup()
 {
@@ -251,9 +207,6 @@ void setup()
   analogRead(RTD_PIN);       // sets ADMUX (reference + channel) for the Timer2 sampler
 
   currentSlaveId = loadSlaveId();
-#if ENABLE_TRIPLE_RESET
-  handleTripleResetOnBoot();
-#endif
 
   modbus_configure(&Serial, BAUD, SERIAL_8N1, currentSlaveId, TX_ENABLE_PIN,
                    HOLDING_REGS_SIZE, holdingRegs);
@@ -287,10 +240,6 @@ void loop()
     processTemperature(maxPassMicros);
     maxPassMicros = 0;
   }
-
-#if ENABLE_TRIPLE_RESET
-  clearBootWindowIfExpired();
-#endif
 
 #if USE_WATCHDOG
   wdt_reset();
