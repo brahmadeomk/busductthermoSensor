@@ -8,8 +8,10 @@
 //   served by modbus_update() on every master request
 // - Slave ID is writable over Modbus (register 21) and kept in EEPROM
 //   as two verified copies, so it survives power loss
-// - Diagnostic registers 22-31: sensor status, raw ADC, Modbus interface
-//   counters, uptime and boot count
+// - Diagnostic registers 22-33: sensor status, raw ADC, Modbus interface
+//   counters, uptime, boot count and sampling ISR execution time
+// - Timer1 runs free at 16 MHz as a cycle counter for the ISR timing
+//   (so PWM on pins 9 and 10 is not available)
 
 #include <EEPROM.h>
 #include <avr/wdt.h>
@@ -78,7 +80,9 @@ enum
   UptimeHi,       // 29  seconds since power-up, high word
   UptimeLo,       // 30  seconds since power-up, low word
   BootCount,      // 31  power-ups / resets since EEPROM was erased (stops at 65534)
-  // add new registers here (32, 33, ...)
+  IsrTimeMax,     // 32  longest sampling ISR run in the last second [0.1 us]
+  IsrTimeMaxEver, // 33  longest sampling ISR run since power-up [0.1 us]
+  // add new registers here (34, 35, ...)
   HOLDING_REGS_SIZE
 };
 
@@ -86,6 +90,7 @@ static_assert(TempValue == 3, "register map changed");
 static_assert(Modbuslooptime == 20, "register map changed");
 static_assert(SlaveIDReg == 21, "register map changed");
 static_assert(DiagStatus == 22 && BootCount == 31, "register map changed");
+static_assert(IsrTimeMax == 32 && IsrTimeMaxEver == 33, "register map changed");
 
 #define DIAG_NTC_OPEN      0x0001
 #define DIAG_NTC_SHORT     0x0002
@@ -102,7 +107,10 @@ unsigned long uptimeSeconds = 0; // counted from the 1 s sampling windows
 volatile uint32_t adcSumReady = 0;
 volatile uint16_t openCountReady = 0;
 volatile uint16_t shortCountReady = 0;
+volatile uint16_t isrMaxCyclesReady = 0;
 volatile bool tempReady = false;
+
+static uint16_t isrMaxCycles = 0; // ISR only
 
 void tempSamplerInit()
 {
@@ -111,10 +119,17 @@ void tempSamplerInit()
   OCR2A  = 124;                   // 1 kHz
   TIMSK2 = _BV(OCIE2A);
   ADCSRA |= _BV(ADSC);            // first conversion
+
+  // Timer1 free running at 16 MHz (62.5 ns per count) to time the ISR
+  TCCR1A = 0;
+  TCCR1B = _BV(CS10);
 }
 
+// Execution time is measured from the first to the last statement of the body;
+// the compiler's register save/restore around it adds roughly 2-3 us more.
 ISR(TIMER2_COMPA_vect)
 {
+  uint16_t t0 = TCNT1;
   static uint32_t acc = 0;
   static uint16_t count = 0;
   static uint16_t openCount = 0;
@@ -134,6 +149,8 @@ ISR(TIMER2_COMPA_vect)
       adcSumReady = acc;
       openCountReady = openCount;
       shortCountReady = shortCount;
+      isrMaxCyclesReady = isrMaxCycles;
+      isrMaxCycles = 0;
       tempReady = true;
       acc = 0;
       count = 0;
@@ -142,6 +159,10 @@ ISR(TIMER2_COMPA_vect)
     }
   }
   ADCSRA |= _BV(ADSC); // start next conversion
+
+  uint16_t cycles = TCNT1 - t0; // wraps correctly, Timer1 period is 4.1 ms
+  if (cycles > isrMaxCycles)
+    isrMaxCycles = cycles;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +182,15 @@ void processTemperature(unsigned long maxPassMicros)
   uint32_t sum = adcSumReady;
   uint16_t openCount = openCountReady;
   uint16_t shortCount = shortCountReady;
+  uint16_t isrCycles = isrMaxCyclesReady;
   tempReady = false;
   interrupts();
+
+  // 16 cycles per us -> 0.1 us units = cycles * 10 / 16
+  unsigned int isrTime = ((uint32_t)isrCycles * 5 + 4) / 8;
+  holdingRegs[IsrTimeMax] = isrTime;
+  if (isrTime > holdingRegs[IsrTimeMaxEver])
+    holdingRegs[IsrTimeMaxEver] = isrTime;
 
   uptimeSeconds++;
   holdingRegs[UptimeHi] = uptimeSeconds >> 16;

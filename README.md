@@ -64,9 +64,16 @@ reserved and read 0. New registers are appended after the slave ID register
 | 29 | Uptime, high word | s |
 | 30 | Uptime, low word (uptime = reg29 * 65536 + reg30) | s |
 | 31 | Boot count (power-ups / resets, kept in EEPROM) | count, stops at 65534 |
+| 32 | Longest sampling ISR run in the last second | 0.1 us |
+| 33 | Longest sampling ISR run since power-up | 0.1 us |
 
-All 32 registers (0-31) can be read in one FC3 request (up to 61 per request).
-New registers are appended from 32 on.
+All 34 registers (0-33) can be read in one FC3 request (up to 61 per request).
+New registers are appended from 34 on.
+
+ISR time is measured with Timer1 running free at 16 MHz (62.5 ns resolution),
+from the first to the last statement of the Timer2 ISR body; register
+save/restore adds about 2-3 us. CPU load of the sampler is roughly
+reg32 / 10 us x 1000 per second, e.g. 50 (5.0 us) = 0.5 %.
 
 ### Reading the interface diagnostics
 
@@ -108,4 +115,5 @@ Devices running the old firmware keep their ID when updated (legacy layout is mi
 - RS485: pin 3 to both DE and /RE, 120 ohm termination at both bus ends, bias resistors.
 - For EEPROM safety at 16 MHz set the brown-out detector to 4.3 V (extended fuse `0xFC`, needs ISP).
 - Do not use `tone()` or PWM on pins 3/11: Timer2 is used for NTC sampling.
+- Do not use PWM on pins 9/10 or the Servo library: Timer1 is the ISR timing counter.
 - Do not call `analogRead()` anywhere: the Timer2 ISR owns the ADC.
