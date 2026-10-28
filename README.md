@@ -9,6 +9,8 @@ NTC temperature on A0, ratiometric with external AREF (5 V).
 busductThermoSensor/
   busductThermoSensor.ino   sketch: sampling, register update, slave ID in EEPROM
   SimpleModbusSlave.h/.cpp  Modbus RTU slave (FC3, FC6, FC16)
+tests/host/                 PC tests with Arduino stubs (run_host_tests.sh)
+TESTING.md                  host test results, hardware bench procedure, record sheet
 ```
 
 ## How it works
