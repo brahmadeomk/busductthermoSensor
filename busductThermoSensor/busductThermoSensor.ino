@@ -1,6 +1,9 @@
 // Busduct thermo sensor - Arduino Nano (ATmega328P, 16 MHz)
 //
 // - NTC on A0 sampled every 1 ms by Timer2 ISR, averaged over 1000 samples (1 s)
+// - Ratiometric: divider supply and AREF are the same 5 V node, so the
+//   reference voltage cancels and does not appear in the calculation
+// - Open / shorted NTC is reported as a fixed fault value in the temperature register
 // - The temperature register is refreshed in loop() once per second and is
 //   served by modbus_update() on every master request
 // - Slave ID is writable over Modbus (last register) and kept in EEPROM
@@ -17,9 +20,17 @@
 
 #define TEMP_SAMPLES       1000  // 1 ms each -> 1 s average
 
+// Sensor fault detection, per ADC sample (ratiometric counts, independent of AREF voltage)
+#define ADC_OPEN_COUNTS    1020  // >= : NTC open / disconnected (would be below -63 degC)
+#define ADC_SHORT_COUNTS   3     // <= : NTC shorted (would be above 259 degC)
+#define FAULT_MIN_SAMPLES  10    // > 1% of a window on a rail -> fault (also catches loose contacts)
+
+#define TEMP_FAULT_OPEN    ((unsigned int)0x8000) // -32768 in register 3
+#define TEMP_FAULT_SHORT   ((unsigned int)0x7FFF) //  32767 in register 3
+
 #define USE_WATCHDOG        0    // 1 only with Optiboot (old Nano bootloader hangs after WDT reset)
 
-// NTC: fixed resistor to AREF (3.0 V), NTC to GND, junction on A0
+// NTC: fixed resistor to AREF (5 V), NTC to GND, junction on A0
 const float R_FIXED  = 100500.0f; // [ohm]
 const float NTC_R0   = 100000.0f; // [ohm] at T0
 const float NTC_T0   = 298.15f;   // [K]
@@ -30,7 +41,7 @@ const float NTC_BETA = 3950.0f;   // [K]
 // SlaveIDReg must stay last: the library only allows writes to the last register.
 enum
 {
-  TempValue      = 3,  // 0.01 degC (signed)
+  TempValue      = 3,  // 0.01 degC (signed); -32768 = NTC open, 32767 = NTC short
   Modbuslooptime = 20, // longest loop() pass in the last second [us], must stay < ~3000
   SlaveIDReg     = 21, // 1-247, read/write
   HOLDING_REGS_SIZE
@@ -44,6 +55,8 @@ float rInf; // NTC R at infinite temperature, from beta model
 // NTC sampling (Timer2, 1 kHz)
 // ---------------------------------------------------------------------------
 volatile uint32_t adcSumReady = 0;
+volatile uint16_t openCountReady = 0;
+volatile uint16_t shortCountReady = 0;
 volatile bool tempReady = false;
 
 void tempSamplerInit()
@@ -59,16 +72,28 @@ ISR(TIMER2_COMPA_vect)
 {
   static uint32_t acc = 0;
   static uint16_t count = 0;
+  static uint16_t openCount = 0;
+  static uint16_t shortCount = 0;
 
   if (!(ADCSRA & _BV(ADSC))) // conversion started on previous tick is done (~104 us)
   {
-    acc += ADC;
+    uint16_t v = ADC;
+    acc += v;
+    if (v >= ADC_OPEN_COUNTS)
+      openCount++;
+    else if (v <= ADC_SHORT_COUNTS)
+      shortCount++;
+
     if (++count >= TEMP_SAMPLES)
     {
       adcSumReady = acc;
+      openCountReady = openCount;
+      shortCountReady = shortCount;
       tempReady = true;
       acc = 0;
       count = 0;
+      openCount = 0;
+      shortCount = 0;
     }
   }
   ADCSRA |= _BV(ADSC); // start next conversion
@@ -89,15 +114,24 @@ void processTemperature(unsigned long maxPassMicros)
 {
   noInterrupts();
   uint32_t sum = adcSumReady;
+  uint16_t openCount = openCountReady;
+  uint16_t shortCount = shortCountReady;
   tempReady = false;
   interrupts();
 
-  float ratio = (sum / (float)TEMP_SAMPLES) / 1024.0f;
-  ratio = constrain(ratio, 0.001f, 0.999f); // open / short sensor guard
-  float rNtc = R_FIXED * ratio / (1.0f - ratio);
-  float tC = NTC_BETA / log(rNtc / rInf) - 273.15f;
+  if (openCount > FAULT_MIN_SAMPLES)
+    holdingRegs[TempValue] = TEMP_FAULT_OPEN;
+  else if (shortCount > FAULT_MIN_SAMPLES)
+    holdingRegs[TempValue] = TEMP_FAULT_SHORT;
+  else
+  {
+    float ratio = (sum / (float)TEMP_SAMPLES) / 1024.0f; // = R_ntc / (R_fixed + R_ntc)
+    ratio = constrain(ratio, 0.001f, 0.999f);             // keeps log() finite
+    float rNtc = R_FIXED * ratio / (1.0f - ratio);
+    float tC = NTC_BETA / log(rNtc / rInf) - 273.15f;
+    holdingRegs[TempValue] = toReg(tC * 100.0f);
+  }
 
-  holdingRegs[TempValue] = toReg(tC * 100.0f);
   holdingRegs[Modbuslooptime] = maxPassMicros > 65535UL ? 65535U : (unsigned int)maxPassMicros;
 }
 
@@ -203,7 +237,7 @@ void setup()
   wdt_disable();
 #endif
 
-  analogReference(EXTERNAL); // 3.0 V on AREF - never switch to DEFAULT/INTERNAL
+  analogReference(EXTERNAL); // 5 V on AREF pin - never switch to DEFAULT/INTERNAL
   analogRead(RTD_PIN);       // sets ADMUX (reference + channel) for the Timer2 sampler
 
   currentSlaveId = loadSlaveId();

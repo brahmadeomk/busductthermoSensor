@@ -1,7 +1,7 @@
 # busductthermoSensor
 
 Arduino Nano (ATmega328P, 16 MHz) Modbus RTU slave for busduct monitoring:
-NTC temperature on A0.
+NTC temperature on A0, ratiometric with external AREF (5 V).
 
 ## Files
 
@@ -31,12 +31,21 @@ existing master configurations keep working.
 | Addr | Name | Unit |
 |---|---|---|
 | 0-2 | unused (former vibration), reads 0 | |
-| 3 | Temperature | 0.01 degC (signed) |
+| 3 | Temperature, or sensor fault: `-32768` (0x8000) NTC open, `32767` (0x7FFF) NTC short | 0.01 degC (signed) |
 | 4-19 | unused (former vibration), reads 0 | |
 | 20 | Longest `loop()` pass in the last second | us |
 | 21 | Slave ID (read/write, FC6 or FC16) | 1-247 |
 
 Only register 21 is writable. Broadcast writes are ignored.
+
+### Sensor fault detection
+
+Every ADC sample is checked: `>= 1020` counts means the NTC is open (would be
+below -63 degC), `<= 3` counts means it is shorted (would be above 259 degC).
+If more than 10 samples (1%) of a 1 s window sit on a rail, register 3 reports
+the fault value instead of a temperature, so loose/intermittent contacts are
+caught too. The valid range -63 ... 259 degC is far outside busduct conditions.
+The fault clears on the first clean 1 s window.
 
 ## Changing the slave ID
 
@@ -55,7 +64,7 @@ Devices running the old firmware keep their ID when updated (legacy layout is mi
 
 ## Hardware notes
 
-- 3.0 V on AREF; the sketch uses `analogReference(EXTERNAL)`. Never call `analogReference(DEFAULT/INTERNAL)`.
+- Ratiometric: feed the divider (100.5 kohm -> A0 -> NTC -> GND) from the same 5 V node as the AREF pin. The sketch uses `analogReference(EXTERNAL)`; never call `analogReference(DEFAULT/INTERNAL)` while AREF is driven.
 - 100 nF from A0 to GND (NTC divider source impedance is ~50 kohm) and on AREF.
 - RS485: pin 3 to both DE and /RE, 120 ohm termination at both bus ends, bias resistors.
 - For EEPROM safety at 16 MHz set the brown-out detector to 4.3 V (extended fuse `0xFC`, needs ISP).
