@@ -54,6 +54,26 @@ reserved and read 0. New registers are appended after the slave ID register
 | 19 | Reserved | reads 0 (was ADXL ISR time (looptime)) |
 | 20 | Longest `loop()` pass in the last second | us |
 | 21 | Slave ID (read/write, FC6 or FC16) | 1-247 |
+| 22 | Diagnostic status | bit0 NTC open, bit1 NTC short, bit2 last slave ID save failed |
+| 23 | ADC average over the last second | 0.1 count (0-10230) |
+| 24 | Frames seen on the bus (any slave ID) | count, wraps at 65535 |
+| 25 | Valid requests for this slave | count, wraps |
+| 26 | Requests for this slave with bad CRC | count, wraps |
+| 27 | Buffer overflow / malformed frames | count, wraps |
+| 28 | Exception replies sent | count, wraps |
+| 29 | Uptime, high word | s |
+| 30 | Uptime, low word (uptime = reg29 * 65536 + reg30) | s |
+| 31 | Boot count (power-ups / resets, kept in EEPROM) | count, stops at 65534 |
+
+All 32 registers (0-31) can be read in one FC3 request (up to 61 per request).
+New registers are appended from 32 on.
+
+### Reading the interface diagnostics
+
+- Bus frames rising but valid requests not: the master polls other IDs only, or this slave's ID is wrong.
+- CRC errors rising: wiring, termination, bias or baud/parity mismatch.
+- Frame errors rising: frames merging (`loop()` too slow, see register 20) or a master sending oversized frames.
+- Boot count rising unexpectedly: brown-outs or resets (check supply and BOD fuse).
 
 Only register 21 is writable. Broadcast writes are ignored.
 

@@ -1,7 +1,7 @@
 #include "SimpleModbusSlave.h"
 
-#define BUFFER_SIZE   64
-#define MAX_READ_REGS ((BUFFER_SIZE - 5) / 2)   // 29 regs fit in one reply
+#define BUFFER_SIZE   128
+#define MAX_READ_REGS ((BUFFER_SIZE - 5) / 2)   // 61 regs fit in one reply
 
 // frame[] is used to receive and transmit packets
 static unsigned char frame[BUFFER_SIZE];
@@ -13,6 +13,7 @@ static unsigned char slaveID;
 static unsigned char function;
 static unsigned char TxEnablePin;
 static unsigned int errorCount;
+static ModbusStats stats;
 static unsigned int T3_5; // frame delay [us]
 static HardwareSerial* ModbusPort;
 
@@ -43,6 +44,12 @@ void modbus_configure(HardwareSerial *SerialPort,
   pinMode(TxEnablePin, OUTPUT);
   digitalWrite(TxEnablePin, LOW);
   errorCount = 0;
+  memset(&stats, 0, sizeof(stats));
+}
+
+const ModbusStats& modbus_stats()
+{
+  return stats;
 }
 
 void modbus_set_writable_register(unsigned int reg)
@@ -87,10 +94,12 @@ unsigned int modbus_update()
 
   unsigned char len = rxLen;
   rxLen = 0;
+  stats.busFrames++;
 
   if (rxOverflow)
   {
     rxOverflow = 0;
+    stats.frameErrors++;
     return ++errorCount;
   }
 
@@ -113,9 +122,11 @@ static void processFrame(unsigned char len)
   unsigned int crc = ((unsigned int)frame[len - 2] << 8) | frame[len - 1];
   if (calculateCRC(len - 2) != crc)
   {
+    stats.crcErrors++;
     errorCount++;
     return; // never answer a corrupt frame
   }
+  stats.requests++;
 
   function = frame[1];
   unsigned int startingAddress = ((unsigned int)frame[2] << 8) | frame[3];
@@ -162,6 +173,7 @@ static void processFrame(unsigned char len)
   {
     if (len != 8)
     {
+      stats.frameErrors++;
       errorCount++;
       return;
     }
@@ -185,6 +197,7 @@ static void processFrame(unsigned char len)
     unsigned char byteCount = frame[6];
     if (len < 9 || byteCount != len - 9 || byteCount != no_of_registers * 2)
     {
+      stats.frameErrors++;
       errorCount++;
       return;
     }
@@ -216,6 +229,7 @@ static void processFrame(unsigned char len)
 
 static void exceptionResponse(unsigned char exception)
 {
+  stats.exceptions++;
   errorCount++;
   if (!broadcastFlag)
   {

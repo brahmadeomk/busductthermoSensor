@@ -6,8 +6,10 @@
 // - Open / shorted NTC is reported as a fixed fault value in the temperature register
 // - The temperature register is refreshed in loop() once per second and is
 //   served by modbus_update() on every master request
-// - Slave ID is writable over Modbus (last register) and kept in EEPROM
+// - Slave ID is writable over Modbus (register 21) and kept in EEPROM
 //   as two verified copies, so it survives power loss
+// - Diagnostic registers 22-31: sensor status, raw ADC, Modbus interface
+//   counters, uptime and boot count
 
 #include <EEPROM.h>
 #include <avr/wdt.h>
@@ -64,17 +66,35 @@ enum
   Reserved_19,    // 19  reads 0 (was ADXL ISR time (looptime))
   Modbuslooptime, // 20  longest loop() pass in the last second [us], must stay < ~3000
   SlaveIDReg,     // 21  1-247, read/write
-  // add new registers here (22, 23, ...)
+
+  // Diagnostics (read only)
+  DiagStatus,     // 22  bit0 NTC open, bit1 NTC short, bit2 last slave ID save failed
+  AdcAverage,     // 23  1 s ADC average [0.1 count], 0-10230
+  BusFrames,      // 24  frames seen on the bus, any slave ID (wraps at 65535)
+  RequestsOk,     // 25  valid requests for this slave (wraps)
+  CrcErrors,      // 26  requests for this slave with bad CRC (wraps)
+  FrameErrors,    // 27  buffer overflow / malformed frames (wraps)
+  ExceptionsSent, // 28  exception replies sent (wraps)
+  UptimeHi,       // 29  seconds since power-up, high word
+  UptimeLo,       // 30  seconds since power-up, low word
+  BootCount,      // 31  power-ups / resets since EEPROM was erased (stops at 65534)
+  // add new registers here (32, 33, ...)
   HOLDING_REGS_SIZE
 };
 
 static_assert(TempValue == 3, "register map changed");
 static_assert(Modbuslooptime == 20, "register map changed");
 static_assert(SlaveIDReg == 21, "register map changed");
+static_assert(DiagStatus == 22 && BootCount == 31, "register map changed");
+
+#define DIAG_NTC_OPEN      0x0001
+#define DIAG_NTC_SHORT     0x0002
+#define DIAG_ID_SAVE_FAIL  0x0004
 
 unsigned int holdingRegs[HOLDING_REGS_SIZE];
 
 float rInf; // NTC R at infinite temperature, from beta model
+unsigned long uptimeSeconds = 0; // counted from the 1 s sampling windows
 
 // ---------------------------------------------------------------------------
 // NTC sampling (Timer2, 1 kHz)
@@ -144,10 +164,22 @@ void processTemperature(unsigned long maxPassMicros)
   tempReady = false;
   interrupts();
 
+  uptimeSeconds++;
+  holdingRegs[UptimeHi] = uptimeSeconds >> 16;
+  holdingRegs[UptimeLo] = uptimeSeconds & 0xFFFF;
+  holdingRegs[AdcAverage] = (sum + 50) / 100; // sum / 1000 samples * 10
+
+  holdingRegs[DiagStatus] &= ~(DIAG_NTC_OPEN | DIAG_NTC_SHORT);
   if (openCount > FAULT_MIN_SAMPLES)
+  {
     holdingRegs[TempValue] = TEMP_FAULT_OPEN;
+    holdingRegs[DiagStatus] |= DIAG_NTC_OPEN;
+  }
   else if (shortCount > FAULT_MIN_SAMPLES)
+  {
     holdingRegs[TempValue] = TEMP_FAULT_SHORT;
+    holdingRegs[DiagStatus] |= DIAG_NTC_SHORT;
+  }
   else
   {
     float ratio = (sum / (float)TEMP_SAMPLES) / 1024.0f; // = R_ntc / (R_fixed + R_ntc)
@@ -167,10 +199,12 @@ void processTemperature(unsigned long maxPassMicros)
 //  0..2 : legacy layout [magicLo, magicHi, slaveId], read only for migration
 // 16..19: slave ID copy A [magicLo, magicHi, id, ~id]
 // 24..27: slave ID copy B [magicLo, magicHi, id, ~id]
+// 32..33: boot counter (little endian, 0xFFFF = erased)
 const uint16_t CONFIG_MAGIC = 0xA5A5;
 const int LEGACY_ADDR       = 0;
 const int ID_COPY_A         = 16;
 const int ID_COPY_B         = 24;
+const int BOOT_COUNT_ADDR   = 32;
 
 uint8_t currentSlaveId = DEFAULT_SLAVE_ID;
 
@@ -248,11 +282,38 @@ void checkModbusSlaveIdUpdate()
     {
       currentSlaveId = (uint8_t)requestedId;
       modbus_update_comms(BAUD, SERIAL_8N1, currentSlaveId);
+      holdingRegs[DiagStatus] &= ~DIAG_ID_SAVE_FAIL;
     }
     else
+    {
       saveSlaveId(currentSlaveId); // roll back, EEPROM write failed
+      holdingRegs[DiagStatus] |= DIAG_ID_SAVE_FAIL;
+    }
   }
   holdingRegs[SlaveIDReg] = currentSlaveId; // master reads back the ID actually in use
+}
+
+// Counts power-ups / resets; one EEPROM write per boot (100k cycle endurance)
+unsigned int incrementBootCount()
+{
+  unsigned int count = EEPROM.read(BOOT_COUNT_ADDR) | ((unsigned int)EEPROM.read(BOOT_COUNT_ADDR + 1) << 8);
+  if (count == 0xFFFF)
+    count = 0;      // erased EEPROM
+  if (count < 0xFFFE)
+    count++;        // saturate, never wrap back to the erased value
+  EEPROM.update(BOOT_COUNT_ADDR, lowByte(count));
+  EEPROM.update(BOOT_COUNT_ADDR + 1, highByte(count));
+  return count;
+}
+
+void updateModbusDiagnostics()
+{
+  const ModbusStats &st = modbus_stats();
+  holdingRegs[BusFrames]      = st.busFrames;
+  holdingRegs[RequestsOk]     = st.requests;
+  holdingRegs[CrcErrors]      = st.crcErrors;
+  holdingRegs[FrameErrors]    = st.frameErrors;
+  holdingRegs[ExceptionsSent] = st.exceptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +327,7 @@ void setup()
   analogRead(RTD_PIN);       // sets ADMUX (reference + channel) for the Timer2 sampler
 
   currentSlaveId = loadSlaveId();
+  holdingRegs[BootCount] = incrementBootCount();
 
   modbus_configure(&Serial, BAUD, SERIAL_8N1, currentSlaveId, TX_ENABLE_PIN,
                    HOLDING_REGS_SIZE, holdingRegs);
@@ -292,6 +354,7 @@ void loop()
   if (pass > maxPassMicros)
     maxPassMicros = pass;
 
+  updateModbusDiagnostics();
   modbus_update();
   checkModbusSlaveIdUpdate(); // right after modbus_update, before anything touches holdingRegs
 
