@@ -25,14 +25,33 @@ disabled. The master always reads precomputed registers.
 
 ## Register map (holding registers, FC3)
 
-Addresses are kept from the earlier vibration + temperature firmware, so
-existing master configurations keep working.
+Numbering is kept from the original vibration + temperature firmware, so
+existing master configurations keep working. Positions no longer used are
+reserved and read 0. New registers are appended after the slave ID register
+(22, 23, ...), so existing addresses never move.
 
-| Addr | Name | Unit |
+| Addr | Register | Unit / meaning |
 |---|---|---|
-| 0-2 | unused (former vibration), reads 0 | |
-| 3 | Temperature, or sensor fault: `-32768` (0x8000) NTC open, `32767` (0x7FFF) NTC short | 0.01 degC (signed) |
-| 4-19 | unused (former vibration), reads 0 | |
+| 0 | Reserved | reads 0 (was X axis RMS [0.01 g]) |
+| 1 | Reserved | reads 0 (was Y axis RMS [0.01 g]) |
+| 2 | Reserved | reads 0 (was Z axis RMS [0.01 g]) |
+| 3 | Temperature | 0.01 degC (signed); fault: `-32768` (0x8000) NTC open, `32767` (0x7FFF) NTC short |
+| 4 | Reserved | reads 0 (was X axis positive peak [0.01 g]) |
+| 5 | Reserved | reads 0 (was Y axis positive peak [0.01 g]) |
+| 6 | Reserved | reads 0 (was Z axis positive peak [0.01 g]) |
+| 7 | Reserved | reads 0 (was X axis RMS [0.01 m/s2]) |
+| 8 | Reserved | reads 0 (was Y axis RMS [0.01 m/s2]) |
+| 9 | Reserved | reads 0 (was Z axis RMS [0.01 m/s2]) |
+| 10 | Reserved | reads 0 (was X axis positive peak [0.01 m/s2]) |
+| 11 | Reserved | reads 0 (was Y axis positive peak [0.01 m/s2]) |
+| 12 | Reserved | reads 0 (was Z axis positive peak [0.01 m/s2]) |
+| 13 | Reserved | reads 0 (was X axis negative peak [0.01 g]) |
+| 14 | Reserved | reads 0 (was Y axis negative peak [0.01 g]) |
+| 15 | Reserved | reads 0 (was Z axis negative peak [0.01 g]) |
+| 16 | Reserved | reads 0 (was X axis negative peak [0.01 m/s2]) |
+| 17 | Reserved | reads 0 (was Y axis negative peak [0.01 m/s2]) |
+| 18 | Reserved | reads 0 (was Z axis negative peak [0.01 m/s2]) |
+| 19 | Reserved | reads 0 (was ADXL ISR time (looptime)) |
 | 20 | Longest `loop()` pass in the last second | us |
 | 21 | Slave ID (read/write, FC6 or FC16) | 1-247 |
 

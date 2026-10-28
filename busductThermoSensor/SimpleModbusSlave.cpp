@@ -6,6 +6,7 @@
 // frame[] is used to receive and transmit packets
 static unsigned char frame[BUFFER_SIZE];
 static unsigned int holdingRegsSize;
+static unsigned int writableReg;
 static unsigned int* regs;
 static unsigned char broadcastFlag;
 static unsigned char slaveID;
@@ -36,11 +37,17 @@ void modbus_configure(HardwareSerial *SerialPort,
   ModbusPort->begin(baud, byteFormat);
   modbus_update_comms(baud, byteFormat, _slaveID);
   holdingRegsSize = _holdingRegsSize;
+  writableReg = _holdingRegsSize - 1;
   regs = _regs;
   TxEnablePin = _TxEnablePin;
   pinMode(TxEnablePin, OUTPUT);
   digitalWrite(TxEnablePin, LOW);
   errorCount = 0;
+}
+
+void modbus_set_writable_register(unsigned int reg)
+{
+  writableReg = reg;
 }
 
 void modbus_update_comms(long baud, unsigned char byteFormat, unsigned char _slaveID)
@@ -161,8 +168,8 @@ static void processFrame(unsigned char len)
     if (broadcastFlag)
       return; // never accept broadcast writes (would re-address every slave)
 
-    // Only the last register (SlaveIDReg in the sketch) is writable
-    if (startingAddress != holdingRegsSize - 1)
+    // Only one register (SlaveIDReg in the sketch) is writable
+    if (startingAddress != writableReg || startingAddress >= holdingRegsSize)
     {
       exceptionResponse(2);
       return;
@@ -189,7 +196,7 @@ static void processFrame(unsigned char len)
       exceptionResponse(3);
       return;
     }
-    if (startingAddress != holdingRegsSize - 1 || no_of_registers != 1)
+    if (startingAddress != writableReg || startingAddress >= holdingRegsSize || no_of_registers != 1)
     {
       exceptionResponse(2);
       return;

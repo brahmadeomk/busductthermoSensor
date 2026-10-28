@@ -12,8 +12,10 @@
  back-to-back frames on a multi-drop bus can merge and be missed.
 
  Function 3:  read holding registers (max 29 per request, 64-byte buffer).
- Function 6:  write single register  - only the LAST register is writable.
- Function 16: write multiple registers - only the LAST register, count 1.
+ Function 6:  write single register  - only the writable register (see below).
+ Function 16: write multiple registers - only the writable register, count 1.
+ The writable register defaults to the last one; change it with
+ modbus_set_writable_register().
  Broadcast (ID 0) writes are ignored; broadcast reads are not allowed.
 
  Frames addressed to other slaves and frames with a bad CRC are ignored
@@ -37,6 +39,9 @@ void modbus_configure(HardwareSerial *SerialPort,
                       unsigned char _TxEnablePin,
                       unsigned int _holdingRegsSize,
                       unsigned int* _regs);
+
+// Selects the only register the master may write (FC6 / FC16)
+void modbus_set_writable_register(unsigned int reg);
 
 // Changes slave ID / frame timing without reopening the port
 void modbus_update_comms(long baud, unsigned char byteFormat, unsigned char _slaveID);

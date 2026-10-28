@@ -36,16 +36,41 @@ const float NTC_R0   = 100000.0f; // [ohm] at T0
 const float NTC_T0   = 298.15f;   // [K]
 const float NTC_BETA = 3950.0f;   // [K]
 
-// Register map: addresses kept from the earlier vibration + temperature firmware,
-// so masters need no reconfiguration. Addresses 0-2 and 4-19 are unused and read 0.
-// SlaveIDReg must stay last: the library only allows writes to the last register.
+// Register map: numbering kept from the original vibration + temperature firmware,
+// so masters need no reconfiguration. Positions no longer used are Reserved_xx and read 0.
+// New registers are appended after SlaveIDReg (22, 23, ...), so existing
+// addresses never move. SlaveIDReg is the only writable register.
 enum
 {
-  TempValue      = 3,  // 0.01 degC (signed); -32768 = NTC open, 32767 = NTC short
-  Modbuslooptime = 20, // longest loop() pass in the last second [us], must stay < ~3000
-  SlaveIDReg     = 21, // 1-247, read/write
+  Reserved_00,    //  0  reads 0 (was X axis RMS [0.01 g])
+  Reserved_01,    //  1  reads 0 (was Y axis RMS [0.01 g])
+  Reserved_02,    //  2  reads 0 (was Z axis RMS [0.01 g])
+  TempValue,      //  3  0.01 degC (signed); -32768 = NTC open, 32767 = NTC short
+  Reserved_04,    //  4  reads 0 (was X axis positive peak [0.01 g])
+  Reserved_05,    //  5  reads 0 (was Y axis positive peak [0.01 g])
+  Reserved_06,    //  6  reads 0 (was Z axis positive peak [0.01 g])
+  Reserved_07,    //  7  reads 0 (was X axis RMS [0.01 m/s2])
+  Reserved_08,    //  8  reads 0 (was Y axis RMS [0.01 m/s2])
+  Reserved_09,    //  9  reads 0 (was Z axis RMS [0.01 m/s2])
+  Reserved_10,    // 10  reads 0 (was X axis positive peak [0.01 m/s2])
+  Reserved_11,    // 11  reads 0 (was Y axis positive peak [0.01 m/s2])
+  Reserved_12,    // 12  reads 0 (was Z axis positive peak [0.01 m/s2])
+  Reserved_13,    // 13  reads 0 (was X axis negative peak [0.01 g])
+  Reserved_14,    // 14  reads 0 (was Y axis negative peak [0.01 g])
+  Reserved_15,    // 15  reads 0 (was Z axis negative peak [0.01 g])
+  Reserved_16,    // 16  reads 0 (was X axis negative peak [0.01 m/s2])
+  Reserved_17,    // 17  reads 0 (was Y axis negative peak [0.01 m/s2])
+  Reserved_18,    // 18  reads 0 (was Z axis negative peak [0.01 m/s2])
+  Reserved_19,    // 19  reads 0 (was ADXL ISR time (looptime))
+  Modbuslooptime, // 20  longest loop() pass in the last second [us], must stay < ~3000
+  SlaveIDReg,     // 21  1-247, read/write
+  // add new registers here (22, 23, ...)
   HOLDING_REGS_SIZE
 };
+
+static_assert(TempValue == 3, "register map changed");
+static_assert(Modbuslooptime == 20, "register map changed");
+static_assert(SlaveIDReg == 21, "register map changed");
 
 unsigned int holdingRegs[HOLDING_REGS_SIZE];
 
@@ -244,6 +269,7 @@ void setup()
 
   modbus_configure(&Serial, BAUD, SERIAL_8N1, currentSlaveId, TX_ENABLE_PIN,
                    HOLDING_REGS_SIZE, holdingRegs);
+  modbus_set_writable_register(SlaveIDReg);
   holdingRegs[SlaveIDReg] = currentSlaveId;
 
   rInf = NTC_R0 * exp(-NTC_BETA / NTC_T0);
