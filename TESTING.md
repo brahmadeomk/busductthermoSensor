@@ -13,16 +13,22 @@ Two levels of testing:
 
 ### How to run
 
-Linux or WSL with `g++`:
+Linux, WSL or Raspberry Pi OS with `g++`:
 
 ```sh
-tests/host/run_host_tests.sh
+sh tests/host/run_host_tests.sh
 ```
 
 The script syntax-checks both source files against stub Arduino headers, then
 builds and runs two test programs with AddressSanitizer and UBSan (catches
-out-of-bounds access and undefined behaviour). The `tests/` folder is outside
-the sketch folder, so the Arduino IDE never compiles it.
+out-of-bounds access and undefined behaviour). The first line of output shows
+which sanitizers are in use. AddressSanitizer does not start on some kernels,
+for example Raspberry Pi OS (`AddressSanitizer: CHECK failed ...
+sanitizer_allocator_primary64.h`); the script detects that and falls back to
+UBSan only, or to no sanitizer. Force a mode with `SANITIZE=full|ub|none`.
+The full AddressSanitizer run is best done on a PC (Linux or WSL). The
+`tests/` folder is outside the sketch folder, so the Arduino IDE never
+compiles it.
 
 | File | Purpose |
 |---|---|
